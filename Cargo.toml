@@ -7,3 +7,4 @@ edition = "2021"
 
 [dependencies]
 pnet = { version = "0.31", features = ["default", "std"]}
+pnet_sys = "0.31.0"
