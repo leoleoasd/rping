@@ -1,0 +1,19 @@
+\begin{Verbatim}[commandchars=\\\{\}]
+
+\PYG{k+kd}{let}\PYG{+w}{ }\PYG{k}{mut}\PYG{+w}{ }\PYG{n}{ip\PYGZus{}vec}: \PYG{n+nb}{Vec}\PYG{o}{\PYGZlt{}}\PYG{k+kt}{u8}\PYG{o}{\PYGZgt{}}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n+nf+fm}{vec!}\PYG{p}{[}\PYG{l+m+mi}{0}\PYG{p}{;}\PYG{+w}{ }\PYG{n}{Ipv4Packet}::\PYG{n}{minimum\PYGZus{}packet\PYGZus{}size}\PYG{p}{()}\PYG{+w}{ }\PYG{o}{+}\PYG{+w}{ }\PYG{l+m+mi}{16}\PYG{p}{];}
+\PYG{k+kd}{let}\PYG{+w}{ }\PYG{k}{mut}\PYG{+w}{ }\PYG{n}{ip\PYGZus{}packet}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n}{MutableIpv4Packet}::\PYG{n}{new}\PYG{p}{(}\PYG{o}{\PYGZam{}}\PYG{k}{mut}\PYG{+w}{ }\PYG{n}{ip\PYGZus{}vec}\PYG{p}{[}\PYG{o}{..}\PYG{p}{]).}\PYG{n}{unwrap}\PYG{p}{();}
+
+\PYG{k+kd}{let}\PYG{+w}{ }\PYG{n}{total\PYGZus{}len}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{p}{(}\PYG{l+m+mi}{20}\PYG{+w}{ }\PYG{o}{+}\PYG{+w}{ }\PYG{l+m+mi}{16}\PYG{p}{)}\PYG{+w}{ }\PYG{k}{as}\PYG{+w}{ }\PYG{k+kt}{u16}\PYG{p}{;}
+
+\PYG{n}{ip\PYGZus{}packet}\PYG{p}{.}\PYG{n}{set\PYGZus{}version}\PYG{p}{(}\PYG{l+m+mi}{4}\PYG{p}{);}
+\PYG{n}{ip\PYGZus{}packet}\PYG{p}{.}\PYG{n}{set\PYGZus{}header\PYGZus{}length}\PYG{p}{(}\PYG{l+m+mi}{5}\PYG{p}{);}
+\PYG{n}{ip\PYGZus{}packet}\PYG{p}{.}\PYG{n}{set\PYGZus{}total\PYGZus{}length}\PYG{p}{(}\PYG{n}{total\PYGZus{}len}\PYG{p}{);}\PYG{+w}{                      }\PYG{c+c1}{// 总长度}
+\PYG{n}{ip\PYGZus{}packet}\PYG{p}{.}\PYG{n}{set\PYGZus{}ttl}\PYG{p}{(}\PYG{l+m+mi}{128}\PYG{p}{);}\PYG{+w}{                                     }\PYG{c+c1}{// TTL}
+\PYG{n}{ip\PYGZus{}packet}\PYG{p}{.}\PYG{n}{set\PYGZus{}next\PYGZus{}level\PYGZus{}protocol}\PYG{p}{(}\PYG{n}{IpNextHeaderProtocols}::\PYG{n}{Icmp}\PYG{p}{);}\PYG{+w}{ }\PYG{c+c1}{// ICMP协议}
+\PYG{n}{ip\PYGZus{}packet}\PYG{p}{.}\PYG{n}{set\PYGZus{}source}\PYG{p}{(}\PYG{n}{Ipv4Addr}::\PYG{n}{new}\PYG{p}{(}\PYG{l+m+mi}{172}\PYG{p}{,}\PYG{+w}{ }\PYG{l+m+mi}{31}\PYG{p}{,}\PYG{+w}{ }\PYG{l+m+mi}{135}\PYG{p}{,}\PYG{+w}{ }\PYG{l+m+mi}{147}\PYG{p}{));}\PYG{+w}{     }\PYG{c+c1}{// 源地址}
+\PYG{n}{ip\PYGZus{}packet}\PYG{p}{.}\PYG{n}{set\PYGZus{}destination}\PYG{p}{(}\PYG{n}{Ipv4Addr}::\PYG{n}{new}\PYG{p}{(}\PYG{l+m+mi}{172}\PYG{p}{,}\PYG{+w}{ }\PYG{l+m+mi}{31}\PYG{p}{,}\PYG{+w}{ }\PYG{l+m+mi}{143}\PYG{p}{,}\PYG{+w}{ }\PYG{l+m+mi}{255}\PYG{p}{));}\PYG{c+c1}{// 目标地址}
+
+\PYG{k+kd}{let}\PYG{+w}{ }\PYG{n}{checksum}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n}{ipv4}::\PYG{n}{checksum}\PYG{p}{(}\PYG{o}{\PYGZam{}}\PYG{n}{ip\PYGZus{}packet}\PYG{p}{.}\PYG{n}{to\PYGZus{}immutable}\PYG{p}{());}
+\PYG{n}{ip\PYGZus{}packet}\PYG{p}{.}\PYG{n}{set\PYGZus{}checksum}\PYG{p}{(}\PYG{n}{checksum}\PYG{p}{);}\PYG{+w}{                           }\PYG{c+c1}{// 计算校验码}
+\PYG{n}{ip\PYGZus{}packet}\PYG{p}{.}\PYG{n}{set\PYGZus{}payload}\PYG{p}{(}\PYG{n}{echo\PYGZus{}packet}\PYG{p}{.}\PYG{n}{packet}\PYG{p}{());}
+\end{Verbatim}

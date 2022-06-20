@@ -6,5 +6,13 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-pnet = { version = "0.31", features = ["default", "std"]}
-pnet_sys = "0.31.0"
+futures = "0.3.21"
+pnet = { path="../libpnet", features = ["default", "std"]}
+pnet_sys = "*"
+rtnetlink = "0.9.1"
+socket2 = "0.4.4"
+tokio = { version = "1.19.2", features = ["full"]}
+
+[[bin]]
+name = "test"
+path = "src/test.rs"

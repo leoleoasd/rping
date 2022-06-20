@@ -1,0 +1,11 @@
+\begin{Verbatim}[commandchars=\\\{\}]
+\PYG{k+kd}{let}\PYG{+w}{ }\PYG{k}{mut}\PYG{+w}{ }\PYG{n}{vec}: \PYG{n+nb}{Vec}\PYG{o}{\PYGZlt{}}\PYG{k+kt}{u8}\PYG{o}{\PYGZgt{}}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n+nf+fm}{vec!}\PYG{p}{[}\PYG{l+m+mi}{0}\PYG{p}{;}\PYG{+w}{ }\PYG{l+m+mi}{16}\PYG{p}{];}\PYG{+w}{ }\PYG{c+c1}{// 包长度}
+\PYG{c+c1}{// Use echo\PYGZus{}request so we can set the identifier and sequence number}
+\PYG{k+kd}{let}\PYG{+w}{ }\PYG{k}{mut}\PYG{+w}{ }\PYG{n}{echo\PYGZus{}packet}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n}{echo\PYGZus{}request}::\PYG{n}{MutableEchoRequestPacket}::\PYG{n}{new}\PYG{p}{(}\PYG{o}{\PYGZam{}}\PYG{k}{mut}\PYG{+w}{ }\PYG{n}{vec}\PYG{p}{[}\PYG{o}{..}\PYG{p}{]).}\PYG{n}{unwrap}\PYG{p}{();}
+\PYG{n}{echo\PYGZus{}packet}\PYG{p}{.}\PYG{n}{set\PYGZus{}sequence\PYGZus{}number}\PYG{p}{(}\PYG{l+m+mi}{20}\PYG{p}{);}\PYG{+w}{ }\PYG{c+c1}{// SEQ字段}
+\PYG{n}{echo\PYGZus{}packet}\PYG{p}{.}\PYG{n}{set\PYGZus{}identifier}\PYG{p}{(}\PYG{l+m+mi}{2}\PYG{p}{);}\PYG{+w}{       }\PYG{c+c1}{// Ident字段}
+\PYG{n}{echo\PYGZus{}packet}\PYG{p}{.}\PYG{n}{set\PYGZus{}icmp\PYGZus{}type}\PYG{p}{(}\PYG{n}{IcmpTypes}::\PYG{n}{EchoRequest}\PYG{p}{);}
+
+\PYG{k+kd}{let}\PYG{+w}{ }\PYG{n}{csum}\PYG{+w}{ }\PYG{o}{=}\PYG{+w}{ }\PYG{n}{util}::\PYG{n}{checksum}\PYG{p}{(}\PYG{n}{echo\PYGZus{}packet}\PYG{p}{.}\PYG{n}{packet}\PYG{p}{(),}\PYG{+w}{ }\PYG{l+m+mi}{1}\PYG{p}{);}
+\PYG{n}{echo\PYGZus{}packet}\PYG{p}{.}\PYG{n}{set\PYGZus{}checksum}\PYG{p}{(}\PYG{n}{csum}\PYG{p}{);}
+\end{Verbatim}
