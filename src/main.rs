@@ -1,8 +1,8 @@
-use std::{net::{SocketAddr, TcpListener}, mem::MaybeUninit};
-use pnet::packet::{icmp::{echo_request, IcmpTypes, echo_reply::EchoReplyPacket}, Packet, util};
+use std::{net::{SocketAddr}, mem::MaybeUninit};
+use pnet::packet::{icmp::{echo_request, IcmpTypes, echo_reply::EchoReplyPacket}, Packet};
 use socket2::{Socket, Domain, Type, Protocol};
-use tokio::main;
-use async_io::{Async, Timer};
+
+use async_io::{Async};
 
 // Invoke as echo <interface name>
 #[tokio::main]
