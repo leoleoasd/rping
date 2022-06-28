@@ -11,7 +11,7 @@ clap = {version= "3.2.6", features = ["derive"]}
 futures = "0.3.21"
 humantime = "2.1.0"
 log = "0.4.17"
-nix = { version = "0.24.1", features = ["net", "socket"]}
+nix = { path = "../nix", features = ["net", "socket"]}
 pnet_packet = "0.31.0"
 rtnetlink = "0.9.1"
 socket2 = "0.4.4"

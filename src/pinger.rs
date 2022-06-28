@@ -14,7 +14,8 @@ use nix::{
     ifaddrs::getifaddrs,
     libc::SO_EE_ORIGIN_ICMP,
     sys::socket::{
-        recvmsg, setsockopt, sockopt::Ipv4RecvErr, MsgFlags, SockaddrIn, SockaddrStorage,
+        recvmsg, setsockopt, sockopt::DontRoute, sockopt::Ipv4RecvErr, MsgFlags, SockaddrIn,
+        SockaddrStorage,
     },
 };
 use pnet_packet::icmp::{
@@ -26,7 +27,7 @@ use socket2::{Domain, Protocol, SockAddr, Socket, Type};
 use tokio::{
     sync::{Mutex, RwLock},
     task::JoinHandle,
-    time::{sleep, Duration, Instant},
+    time::{sleep, Duration, Instant, Interval, interval},
 };
 
 #[derive(Debug)]
@@ -42,6 +43,7 @@ pub struct Pinger {
 }
 
 impl Pinger {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         host: SockAddr,
         count: u16,
@@ -50,6 +52,7 @@ impl Pinger {
         ttl: u8,
         timeout: Duration,
         interval: Duration,
+        route: bool,
     ) -> io::Result<Self> {
         let addrs = getifaddrs()?;
         for ifaddr in addrs {
@@ -71,6 +74,9 @@ impl Pinger {
         sock.set_broadcast(broadcast)?;
         sock.set_ttl(ttl as u32)?;
         setsockopt(sock.as_raw_fd(), Ipv4RecvErr, &true)?;
+        if route {
+            setsockopt(sock.as_raw_fd(), DontRoute, &true)?;
+        }
         Ok(Pinger {
             socket: Async::new(sock)?,
             host,
@@ -93,7 +99,9 @@ impl Pinger {
             panic!("Already started pinging!");
         }
         let mut data: Vec<u8> = vec![0; self.size as usize];
+        let mut timer = interval(self.interval);
         for i in 0..self.count {
+            timer.tick().await;
             let mut echo_packet = MutableEchoRequestPacket::new(&mut data[..]).unwrap();
             echo_packet.set_sequence_number(i);
             echo_packet.set_icmp_type(IcmpTypes::EchoRequest);
@@ -105,15 +113,22 @@ impl Pinger {
                 .lock()
                 .await
                 .push(tokio::spawn(self.timeout(i, listen_handle)));
-            self.socket
+            match self
+                .socket
                 .write_with(|socket| socket.send_to(&data, &self.host))
                 .await
-                .expect("OS Error: Failed to send packet");
+            {
+                Ok(_) => {}
+                Err(e) => {
+                    error!("Failed to send packet: {}", e);
+                    self.timeout_handles.lock().await.index(i as usize).abort();
+                    continue;
+                }
+            }
             debug!(
                 "Sent package {i} to {}",
                 self.host.as_socket_ipv4().unwrap().ip()
             );
-            sleep(self.interval).await;
         }
     }
     async fn listen(&self) {

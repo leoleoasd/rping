@@ -35,6 +35,10 @@ struct Cli {
     ttl: u8,
     #[clap(short, long, default_value = "32")]
     size: u16,
+    #[clap(short='r', long="route", help = "Don't use the system routing table", action = ArgAction::SetTrue)]
+    route: bool,
+    #[clap(long, help = "Timeout for each ping", default_value = "5s")]
+    timeout: humantime::Duration,
 }
 
 #[derive(Clone, ValueEnum, Debug)]
@@ -72,7 +76,7 @@ async fn main() {
         .timestamp(args.timestamp.clone().into())
         .init()
         .unwrap();
-    trace!("{args:?}");
+    trace!("args = {args:?}");
 
     let pinger = Box::leak(Box::new(
         Pinger::new(
@@ -85,8 +89,9 @@ async fn main() {
             args.broadcast,
             args.size,
             args.ttl,
-            Duration::from_secs(10),
+            args.timeout.into(),
             args.interval.into(),
+            args.route,
         )
         .unwrap(),
     ));
