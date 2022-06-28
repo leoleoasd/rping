@@ -1,7 +1,11 @@
+use clap::{ArgAction, Parser, ValueEnum};
+use log::trace;
 use pinger::Pinger;
-use clap::{Parser, Args, Subcommand, ValueEnum, ArgAction};
 
-use std::{net::{SocketAddr, Ipv4Addr}, time::Duration, str::FromStr};
+use std::{
+    net::{Ipv4Addr, SocketAddr},
+    time::Duration,
+};
 
 mod pinger;
 
@@ -12,14 +16,26 @@ struct Cli {
     verbosity: u8,
     #[clap(short, long, help = "disable log output", action = ArgAction::SetTrue)]
     quiet: bool,
-    #[clap(short, long, value_enum, default_value = "off")]
+    #[clap(long, value_enum, default_value = "off")]
     timestamp: Timestamp,
     #[clap(help = "host to ping")]
     host: Ipv4Addr,
-    #[clap(short, long, help = "number of pings to send, use -1 for infinite", default_value = "-1")]
+    #[clap(
+        short,
+        long,
+        help = "number of pings to send, use -1 for infinite",
+        default_value = "-1"
+    )]
     count: i16,
+    #[clap(short, long)]
+    broadcast: bool,
+    #[clap(short, long, help = "time between pings", default_value = "1s")]
+    interval: humantime::Duration,
+    #[clap(short, long, default_value = "128")]
+    ttl: u8,
+    #[clap(short, long, default_value = "32")]
+    size: u16,
 }
-
 
 #[derive(Clone, ValueEnum, Debug)]
 enum Timestamp {
@@ -49,23 +65,28 @@ impl From<Timestamp> for stderrlog::Timestamp {
 #[tokio::main]
 async fn main() {
     let args = Cli::parse();
-    println!("{:?}", args);
     stderrlog::new()
         .module(module_path!())
         .quiet(args.quiet)
         .verbosity((args.verbosity + 2) as usize)
-        .timestamp(args.timestamp.into())
+        .timestamp(args.timestamp.clone().into())
         .init()
         .unwrap();
+    trace!("{args:?}");
+
     let pinger = Box::leak(Box::new(
         Pinger::new(
             SocketAddr::from((args.host, 0)).into(),
-            if args.count > 0 { args.count as u16 } else { u16::MAX },
-            false,
-            64,
-            10,
+            if args.count >= 0 {
+                args.count as u16
+            } else {
+                u16::MAX
+            },
+            args.broadcast,
+            args.size,
+            args.ttl,
             Duration::from_secs(10),
-            Duration::from_secs(1),
+            args.interval.into(),
         )
         .unwrap(),
     ));

@@ -9,6 +9,7 @@ edition = "2021"
 async-io = "1.7.0"
 clap = {version= "3.2.6", features = ["derive"]}
 futures = "0.3.21"
+humantime = "2.1.0"
 log = "0.4.17"
 nix = { version = "0.24.1", features = ["net", "socket"]}
 pnet_packet = "0.31.0"

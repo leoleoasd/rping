@@ -4,17 +4,23 @@ use std::{
     net::Ipv4Addr,
     ops::Index,
     os::unix::prelude::AsRawFd,
+    process::exit,
 };
 
 use async_io::Async;
 
 use log::{debug, error, info, warn};
 use nix::{
+    ifaddrs::getifaddrs,
     libc::SO_EE_ORIGIN_ICMP,
-    sys::socket::{recvmsg, setsockopt, sockopt::Ipv4RecvErr, MsgFlags, SockaddrStorage},
+    sys::socket::{
+        recvmsg, setsockopt, sockopt::Ipv4RecvErr, MsgFlags, SockaddrIn, SockaddrStorage,
+    },
 };
 use pnet_packet::icmp::{
-    echo_reply::EchoReplyPacket, echo_request::{MutableEchoRequestPacket, EchoRequestPacket}, IcmpPacket, IcmpTypes,
+    echo_reply::EchoReplyPacket,
+    echo_request::{EchoRequestPacket, MutableEchoRequestPacket},
+    IcmpPacket, IcmpTypes,
 };
 use socket2::{Domain, Protocol, SockAddr, Socket, Type};
 use tokio::{
@@ -45,31 +51,26 @@ impl Pinger {
         timeout: Duration,
         interval: Duration,
     ) -> io::Result<Self> {
+        let addrs = getifaddrs()?;
+        for ifaddr in addrs {
+            match ifaddr.broadcast {
+                Some(addr) => {
+                    if addr.as_sockaddr_in().is_some() {
+                        let braddr = addr.as_sockaddr_in().unwrap();
+                        let host: SockaddrIn = host.as_socket_ipv4().unwrap().into();
+                        if *braddr == host && !broadcast {
+                            error!("You should specify broadcast option");
+                            exit(-1);
+                        }
+                    }
+                }
+                None => {}
+            }
+        }
         let sock = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::ICMPV4)).unwrap();
         sock.set_broadcast(broadcast)?;
         sock.set_ttl(ttl as u32)?;
         setsockopt(sock.as_raw_fd(), Ipv4RecvErr, &true)?;
-        // syscall!(setsockopt(
-        //     sock.as_raw_fd(),
-        //     libc::SOL_IP,
-        //     libc::IP_RECVERR,
-        //     &yes as *const i32 as *const libc::c_void,
-        //     std::mem::size_of::<i32>() as u32,
-        // ))?;
-        // syscall!(setsockopt(
-        //     sock.as_raw_fd(),
-        //     libc::SOL_IP,
-        //     libc::IP_RECVTTL,
-        //     &yes as *const i32 as *const libc::c_void,
-        //     std::mem::size_of::<i32>() as u32,
-        // ))?;
-        // syscall!(setsockopt(
-        //     sock.as_raw_fd(),
-        //     libc::SOL_IP,
-        //     libc::IP_RETOPTS,
-        //     &yes as *const i32 as *const libc::c_void,
-        //     std::mem::size_of::<i32>() as u32,
-        // ))?;
         Ok(Pinger {
             socket: Async::new(sock)?,
             host,
@@ -97,17 +98,21 @@ impl Pinger {
             echo_packet.set_sequence_number(i);
             echo_packet.set_icmp_type(IcmpTypes::EchoRequest);
 
-            self.socket
-                .write_with(|socket| socket.send_to(&data, &self.host))
-                .await
-                .expect("OS Error: Failed to send packet");
             let now = Instant::now();
             self.starts.write().await.push(now);
-            debug!("Sent package {i} to {}", self.host.as_socket_ipv4().unwrap().ip());
+
             self.timeout_handles
                 .lock()
                 .await
                 .push(tokio::spawn(self.timeout(i, listen_handle)));
+            self.socket
+                .write_with(|socket| socket.send_to(&data, &self.host))
+                .await
+                .expect("OS Error: Failed to send packet");
+            debug!(
+                "Sent package {i} to {}",
+                self.host.as_socket_ipv4().unwrap().ip()
+            );
             sleep(self.interval).await;
         }
     }
@@ -153,7 +158,10 @@ impl Pinger {
                         match msg {
                             nix::sys::socket::ControlMessageOwned::Ipv4RecvErr(e, addr) => {
                                 let addr = addr
-                                    .map(|a| Ipv4Addr::from(a.sin_addr.s_addr as u32).to_string())
+                                    .map(|a| {
+                                        Ipv4Addr::from((a.sin_addr.s_addr as u32).to_be())
+                                            .to_string()
+                                    })
                                     .unwrap_or_else(|| "<unknown>".to_string());
                                 if e.ee_origin == SO_EE_ORIGIN_ICMP {
                                     match e.ee_type {
@@ -214,7 +222,10 @@ impl Pinger {
                     let seq = echo_reply.get_sequence_number();
                     let duration = self.starts.read().await.index(seq as usize).elapsed();
                     let remote = remote.as_socket_ipv4().unwrap().ip().to_string();
-                    info!("Received package #{seq} {} bytes from {} in {:?}", n, remote, duration);
+                    info!(
+                        "Received package #{seq} {} bytes from {} in {:?}",
+                        n, remote, duration
+                    );
                     self.timeout_handles
                         .lock()
                         .await
