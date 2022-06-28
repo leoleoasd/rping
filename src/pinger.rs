@@ -14,7 +14,7 @@ use nix::{
     sys::socket::{recvmsg, setsockopt, sockopt::Ipv4RecvErr, MsgFlags, SockaddrStorage},
 };
 use pnet_packet::icmp::{
-    echo_reply::EchoReplyPacket, echo_request::MutableEchoRequestPacket, IcmpPacket, IcmpTypes,
+    echo_reply::EchoReplyPacket, echo_request::{MutableEchoRequestPacket, EchoRequestPacket}, IcmpPacket, IcmpTypes,
 };
 use socket2::{Domain, Protocol, SockAddr, Socket, Type};
 use tokio::{
@@ -103,7 +103,7 @@ impl Pinger {
                 .expect("OS Error: Failed to send packet");
             let now = Instant::now();
             self.starts.write().await.push(now);
-            debug!("Sent package {i} to {:?}", self.host);
+            debug!("Sent package {i} to {}", self.host.as_socket_ipv4().unwrap().ip());
             self.timeout_handles
                 .lock()
                 .await
@@ -115,8 +115,8 @@ impl Pinger {
         for _i in 0..self.count {
             let mut recv_buf: Vec<MaybeUninit<u8>> = vec![MaybeUninit::uninit(); 1500];
             let resp_packet = self.socket.read_with(|s| s.recv_from(&mut recv_buf)).await;
-            let remote = match resp_packet {
-                Ok((_, r)) => r,
+            let (n, remote) = match resp_packet {
+                Ok((n, r)) => (n, r),
                 Err(_e) => {
                     let mut recv_buf: Vec<u8> = vec![0; 1500];
                     let result = self
@@ -141,6 +141,13 @@ impl Pinger {
                             continue;
                         }
                     };
+                    let icmp = EchoRequestPacket::new(&recv_buf[..]).unwrap();
+                    let seq = icmp.get_sequence_number();
+                    self.timeout_handles
+                        .lock()
+                        .await
+                        .index(seq as usize)
+                        .abort();
                     for msg in result {
                         // print!("{:?}", msg);
                         match msg {
@@ -152,35 +159,35 @@ impl Pinger {
                                     match e.ee_type {
                                         3 => match e.ee_code {
                                             0 => {
-                                                error!("ICMP Error: received Network Unreachable from {addr}");
+                                                error!("ICMP Error: received Network Unreachable from {addr}, seq = {seq}");
                                                 continue;
                                             }
                                             1 => {
-                                                error!("ICMP Error: received Host Unreachable from {addr}");
+                                                error!("ICMP Error: received Host Unreachable from {addr}, seq = {seq}");
                                                 continue;
                                             }
                                             2 => {
-                                                error!("ICMP Error: received Protocol Unreachable from {addr}");
+                                                error!("ICMP Error: received Protocol Unreachable from {addr}, seq = {seq}");
                                                 continue;
                                             }
                                             3 => {
-                                                error!("ICMP Error: received Port Unreachable from {addr}");
+                                                error!("ICMP Error: received Port Unreachable from {addr}, seq = {seq}");
                                                 continue;
                                             }
                                             _ => {
-                                                error!("ICMP Error: received unknown error from {addr}");
+                                                error!("ICMP Error: received unknown error from {addr}, seq = {seq}");
                                                 continue;
                                             }
                                         },
                                         11 => {
                                             error!(
-                                                "ICMP Error: received Time Exceeded from {addr}"
+                                                "ICMP Error: received Time Exceeded from {addr}, seq = {seq}"
                                             );
                                             continue;
                                         }
                                         _ => {
                                             error!(
-                                                "ICMP Error: received unknown error from {addr}"
+                                                "ICMP Error: received unknown error from {addr}, seq = {seq}"
                                             );
                                             continue;
                                         }
@@ -188,7 +195,7 @@ impl Pinger {
                                 }
                             }
                             _ => {
-                                error!("OS Error: Unknown control message: {:?}", msg);
+                                error!("OS Error: Unknown control message: {:?}, seq = {seq}", msg);
                                 continue;
                             }
                         }
@@ -206,7 +213,8 @@ impl Pinger {
                     let echo_reply: EchoReplyPacket = EchoReplyPacket::new(&recv_buf[..]).unwrap();
                     let seq = echo_reply.get_sequence_number();
                     let duration = self.starts.read().await.index(seq as usize).elapsed();
-                    info!("Received package {seq} from {:?} in {:?}", remote, duration);
+                    let remote = remote.as_socket_ipv4().unwrap().ip().to_string();
+                    info!("Received package #{seq} {} bytes from {} in {:?}", n, remote, duration);
                     self.timeout_handles
                         .lock()
                         .await

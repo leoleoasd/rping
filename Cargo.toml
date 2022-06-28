@@ -7,6 +7,7 @@ edition = "2021"
 
 [dependencies]
 async-io = "1.7.0"
+clap = {version= "3.2.6", features = ["derive"]}
 futures = "0.3.21"
 log = "0.4.17"
 nix = { version = "0.24.1", features = ["net", "socket"]}
@@ -16,6 +17,3 @@ socket2 = "0.4.4"
 stderrlog = "0.5.1"
 tokio = { version = "1.19.2", features = ["full"]}
 
-[[bin]]
-name = "test"
-path = "src/test.rs"
