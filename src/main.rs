@@ -2,10 +2,7 @@ use clap::{ArgAction, Parser, ValueEnum};
 use log::trace;
 use pinger::Pinger;
 
-use std::{
-    net::{Ipv4Addr, SocketAddr},
-    time::Duration,
-};
+use std::net::{Ipv4Addr, SocketAddr};
 
 mod pinger;
 

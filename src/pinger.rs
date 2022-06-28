@@ -12,23 +12,87 @@ use async_io::Async;
 use log::{debug, error, info, warn};
 use nix::{
     ifaddrs::getifaddrs,
-    libc::SO_EE_ORIGIN_ICMP,
+    libc::{sock_extended_err, SO_EE_ORIGIN_ICMP},
     sys::socket::{
         recvmsg, setsockopt, sockopt::DontRoute, sockopt::Ipv4RecvErr, MsgFlags, SockaddrIn,
         SockaddrStorage,
     },
 };
-use pnet_packet::icmp::{
-    echo_reply::EchoReplyPacket,
-    echo_request::{EchoRequestPacket, MutableEchoRequestPacket},
-    IcmpPacket, IcmpTypes,
+use pnet_packet::{
+    icmp::{
+        echo_reply::EchoReplyPacket,
+        echo_request::{EchoRequestPacket, MutableEchoRequestPacket},
+        IcmpPacket, IcmpTypes, MutableIcmpPacket,
+    },
+    Packet, PacketSize,
 };
+use quick_error::quick_error;
 use socket2::{Domain, Protocol, SockAddr, Socket, Type};
 use tokio::{
     sync::{Mutex, RwLock},
     task::JoinHandle,
-    time::{sleep, Duration, Instant, Interval, interval},
+    time::{interval, sleep, Duration, Instant},
 };
+
+// HostUnreachable(Ipv4Addr, u16)
+// ProtocolUnreachable(Ipv4Addr, u16)
+// PortUnreachable(Ipv4Addr, u16)
+// OtherUnreachable(Ipv4Addr, u16, u8)
+// TimeExceeded(Ipv4Addr, u16)
+// Unknown(Ipv4Addr, u16, u8, u8)
+quick_error! {
+    #[derive(Debug)]
+    enum IcmpError {
+        NetworkUnreachable(ip: Ipv4Addr, seq: u16) {
+            display("Network unreachable from {}, seq: {}", ip, seq)
+        }
+        HostUnreachable(ip: Ipv4Addr, seq: u16) {
+            display("Host unreachable from {}, seq: {}", ip, seq)
+        }
+        ProtocolUnreachable(ip: Ipv4Addr, seq: u16) {
+            display("Protocol unreachable from {}, seq: {}", ip, seq)
+        }
+        PortUnreachable(ip: Ipv4Addr, seq: u16) {
+            display("Port unreachable from {}, seq: {}", ip, seq)
+        }
+        OtherUnreachable(ip: Ipv4Addr, seq: u16, code: u8) {
+            display("Other unreachable from {}, seq: {}, ee_code: {}", ip, seq, code)
+        }
+        TimeExceeded(ip: Ipv4Addr, seq: u16) {
+            display("Time exceeded from {}, seq: {}", ip, seq)
+        }
+        Unknown(ip: Ipv4Addr, seq: u16, ee_code: u8, ee_type: u8) {
+            display("Unknown from {}, seq: {}, ee_code: {}, ee_type: {}", ip, seq, ee_code, ee_type)
+        }
+        UnknownOrigin(ip: Ipv4Addr, seq: u16, ee_origin: u8,  ee_code: u8, ee_type: u8) {
+            display("Unknown origin from {}, seq: {}, ee_code: {}, ee_type: {}", ip, seq, ee_code, ee_type)
+        }
+        Io(err: io::Error) {
+            display("IO error: {}", err)
+            source(err)
+            from()
+        }
+    }
+}
+
+impl From<(sock_extended_err, Ipv4Addr, u16)> for IcmpError {
+    fn from((err, addr, seq): (sock_extended_err, Ipv4Addr, u16)) -> Self {
+        match err.ee_origin {
+            SO_EE_ORIGIN_ICMP => match err.ee_type {
+                3 => match err.ee_code {
+                    0 => IcmpError::NetworkUnreachable(addr, seq),
+                    1 => IcmpError::HostUnreachable(addr, seq),
+                    2 => IcmpError::ProtocolUnreachable(addr, seq),
+                    3 => IcmpError::PortUnreachable(addr, seq),
+                    _ => IcmpError::OtherUnreachable(addr, seq, err.ee_code),
+                },
+                11 => IcmpError::TimeExceeded(addr, seq),
+                _ => IcmpError::Unknown(addr, seq, err.ee_type, err.ee_code),
+            },
+            _ => unreachable!(),
+        }
+    }
+}
 
 #[derive(Debug)]
 pub struct Pinger {
@@ -131,135 +195,158 @@ impl Pinger {
             );
         }
     }
-    async fn listen(&self) {
-        for _i in 0..self.count {
-            let mut recv_buf: Vec<MaybeUninit<u8>> = vec![MaybeUninit::uninit(); 1500];
-            let resp_packet = self.socket.read_with(|s| s.recv_from(&mut recv_buf)).await;
-            let (n, remote) = match resp_packet {
-                Ok((n, r)) => (n, r),
-                Err(_e) => {
-                    let mut recv_buf: Vec<u8> = vec![0; 1500];
-                    let result = self
-                        .socket
-                        .read_with(|s| {
-                            let iov = IoSliceMut::new(recv_buf.as_mut_slice());
-                            let mut cmsg_buffer = vec![0u8; 1500];
-                            recvmsg::<SockaddrStorage>(
-                                s.as_raw_fd(),
-                                [iov].as_mut_slice(),
-                                Some(&mut cmsg_buffer),
-                                MsgFlags::MSG_ERRQUEUE,
-                            )
-                            .map_err(|e| e.into())
-                            .map(|r| r.cmsgs().collect::<Vec<_>>())
-                        })
-                        .await;
-                    let result = match result {
-                        Ok(r) => r,
-                        Err(e) => {
-                            error!("OS Error: Failed to receive packet: {}", e);
-                            continue;
-                        }
-                    };
-                    let icmp = EchoRequestPacket::new(&recv_buf[..]).unwrap();
-                    let seq = icmp.get_sequence_number();
+    async fn traceroute(&self) -> io::Result<Vec<(Ipv4Addr, Duration)>> {
+        let result = vec![];
+        for ttl in 0..128 {
+            let mut data: Vec<u8> = vec![0; self.size as usize];
+            let mut echo_packet = MutableIcmpPacket::new(&mut data[..]).unwrap();
+            echo_packet.set_icmp_type(IcmpTypes::Traceroute);
+            self.socket.as_ref().set_ttl(ttl)?;
+
+            let _now = Instant::now();
+
+            match self
+                .socket
+                .write_with(|socket| socket.send_to(&data, &self.host))
+                .await
+            {
+                Ok(_) => {}
+                Err(e) => {
+                    error!("Failed to send packet: {}", e);
                     self.timeout_handles
                         .lock()
                         .await
-                        .index(seq as usize)
+                        .index(ttl as usize)
                         .abort();
-                    for msg in result {
-                        // print!("{:?}", msg);
-                        match msg {
-                            nix::sys::socket::ControlMessageOwned::Ipv4RecvErr(e, addr) => {
-                                let addr = addr
-                                    .map(|a| {
-                                        Ipv4Addr::from((a.sin_addr.s_addr as u32).to_be())
-                                            .to_string()
-                                    })
-                                    .unwrap_or_else(|| "<unknown>".to_string());
-                                if e.ee_origin == SO_EE_ORIGIN_ICMP {
-                                    match e.ee_type {
-                                        3 => match e.ee_code {
-                                            0 => {
-                                                error!("ICMP Error: received Network Unreachable from {addr}, seq = {seq}");
-                                                continue;
-                                            }
-                                            1 => {
-                                                error!("ICMP Error: received Host Unreachable from {addr}, seq = {seq}");
-                                                continue;
-                                            }
-                                            2 => {
-                                                error!("ICMP Error: received Protocol Unreachable from {addr}, seq = {seq}");
-                                                continue;
-                                            }
-                                            3 => {
-                                                error!("ICMP Error: received Port Unreachable from {addr}, seq = {seq}");
-                                                continue;
-                                            }
-                                            _ => {
-                                                error!("ICMP Error: received unknown error from {addr}, seq = {seq}");
-                                                continue;
-                                            }
-                                        },
-                                        11 => {
-                                            error!(
-                                                "ICMP Error: received Time Exceeded from {addr}, seq = {seq}"
-                                            );
-                                            continue;
-                                        }
-                                        _ => {
-                                            error!(
-                                                "ICMP Error: received unknown error from {addr}, seq = {seq}"
-                                            );
-                                            continue;
-                                        }
-                                    }
-                                }
-                            }
-                            _ => {
-                                error!("OS Error: Unknown control message: {:?}, seq = {seq}", msg);
-                                continue;
-                            }
-                        }
-                    }
                     continue;
                 }
-            };
-            let recv_buf = recv_buf
-                .into_iter()
-                .map(|x| unsafe { x.assume_init() })
-                .collect::<Vec<u8>>();
-            let icmp = IcmpPacket::new(&recv_buf[..]).unwrap();
-            match icmp.get_icmp_type() {
-                IcmpTypes::EchoReply => {
-                    let echo_reply: EchoReplyPacket = EchoReplyPacket::new(&recv_buf[..]).unwrap();
-                    let seq = echo_reply.get_sequence_number();
-                    let duration = self.starts.read().await.index(seq as usize).elapsed();
-                    let remote = remote.as_socket_ipv4().unwrap().ip().to_string();
-                    info!(
-                        "Received package #{seq} {} bytes from {} in {:?}",
-                        n, remote, duration
-                    );
-                    self.timeout_handles
-                        .lock()
-                        .await
-                        .index(seq as usize)
-                        .abort();
+            }
+
+            debug!(
+                "Sent package {ttl} to {}",
+                self.host.as_socket_ipv4().unwrap().ip()
+            );
+        }
+        Ok(result)
+    }
+    async fn recv(&'static self) -> Result<(IcmpPacket<'static>, Ipv4Addr), IcmpError> {
+        let mut recv_buf: Vec<MaybeUninit<u8>> = vec![MaybeUninit::uninit(); 1500];
+        let resp_packet = self.socket.read_with(|s| s.recv_from(&mut recv_buf)).await;
+        let (n, remote) = match resp_packet {
+            Ok((n, r)) => (n, r),
+            Err(_e) => {
+                let mut recv_buf: Vec<u8> = vec![0; 1500];
+                let result = self
+                    .socket
+                    .read_with(|s| {
+                        let iov = IoSliceMut::new(recv_buf.as_mut_slice());
+                        let mut cmsg_buffer = vec![0u8; 1500];
+                        recvmsg::<SockaddrStorage>(
+                            s.as_raw_fd(),
+                            [iov].as_mut_slice(),
+                            Some(&mut cmsg_buffer),
+                            MsgFlags::MSG_ERRQUEUE,
+                        )
+                        .map_err(|e| e.into())
+                        .map(|r| r.cmsgs().collect::<Vec<_>>())
+                    })
+                    .await;
+                let result = result?;
+                let icmp = EchoRequestPacket::new(&recv_buf[..]).unwrap();
+                let seq = icmp.get_sequence_number();
+                for msg in result {
+                    match msg {
+                        nix::sys::socket::ControlMessageOwned::Ipv4RecvErr(e, addr) => {
+                            let addr = addr
+                                .map(|a| Ipv4Addr::from((a.sin_addr.s_addr as u32).to_be()))
+                                .unwrap_or_else(|| Ipv4Addr::new(0, 0, 0, 0));
+                            if e.ee_origin == SO_EE_ORIGIN_ICMP {
+                                return Err(IcmpError::from((e, addr, seq)));
+                            } else {
+                                return Err(IcmpError::UnknownOrigin(
+                                    addr,
+                                    seq,
+                                    e.ee_origin,
+                                    e.ee_code,
+                                    e.ee_type,
+                                ));
+                            }
+                        }
+                        _ => {
+                            panic!("Unexpected control message: {:?}", msg);
+                        }
+                    }
                 }
-                IcmpTypes::TimeExceeded => {
-                    // let echo_reply = TimeExceededPacket::new(&recv_buf[..]).unwrap();
-                    // let seq = echo_reply.get_sequence_number();
-                    // let duration = self.starts.read().await.index(seq as usize).elapsed();
-                    info!("Received package from {:?}: Time Exceeded", remote);
+                panic!("no msg");
+            }
+        };
+        let mut recv_buf = recv_buf
+            .into_iter()
+            .map(|x| unsafe { x.assume_init() })
+            .collect::<Vec<u8>>();
+        recv_buf.truncate(n);
+        let icmp = IcmpPacket::owned(recv_buf).unwrap();
+        return Ok((icmp, *remote.as_socket_ipv4().unwrap().ip()));
+    }
+    async fn listen(&'static self) {
+        for _i in 0..self.count {
+            let icmp = self.recv().await;
+            match icmp {
+                Ok((icmp, remote)) => {
+                    match icmp.get_icmp_type() {
+                        IcmpTypes::EchoReply => {
+                            let echo_reply: EchoReplyPacket =
+                                EchoReplyPacket::new(icmp.packet()).unwrap();
+                            let seq = echo_reply.get_sequence_number();
+                            let duration = self.starts.read().await.index(seq as usize).elapsed();
+                            let remote = remote.to_string();
+                            info!(
+                                "Received package #{seq} {} bytes from {} in {:?}",
+                                icmp.packet_size(),
+                                remote,
+                                duration
+                            );
+                            self.timeout_handles
+                                .lock()
+                                .await
+                                .index(seq as usize)
+                                .abort();
+                        }
+                        IcmpTypes::TimeExceeded => {
+                            // let echo_reply = TimeExceededPacket::new(&recv_buf[..]).unwrap();
+                            // let seq = echo_reply.get_sequence_number();
+                            // let duration = self.starts.read().await.index(seq as usize).elapsed();
+                            info!("Received package from {:?}: Time Exceeded", remote);
+                        }
+                        _ => {
+                            warn!(
+                                "Received package from {:?}: {:?}",
+                                remote,
+                                icmp.get_icmp_type()
+                            );
+                        }
+                    }
                 }
-                _ => {
-                    warn!(
-                        "Received package from {:?}: {:?}",
-                        remote,
-                        icmp.get_icmp_type()
-                    );
-                }
+                Err(err) => match err {
+                    IcmpError::NetworkUnreachable(_, seq)
+                    | IcmpError::HostUnreachable(_, seq)
+                    | IcmpError::ProtocolUnreachable(_, seq)
+                    | IcmpError::PortUnreachable(_, seq)
+                    | IcmpError::OtherUnreachable(_, seq, _)
+                    | IcmpError::TimeExceeded(_, seq)
+                    | IcmpError::Unknown(_, seq, _, _)
+                    | IcmpError::UnknownOrigin(_, seq, _, _, _) => {
+                        error!("{}", err);
+                        self.timeout_handles
+                            .lock()
+                            .await
+                            .index(seq as usize)
+                            .abort();
+                    }
+                    IcmpError::Io(_) => {
+                        error!("{}", err);
+                    }
+                },
             }
         }
     }
