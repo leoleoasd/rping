@@ -8,9 +8,12 @@ edition = "2021"
 [dependencies]
 async-io = "1.7.0"
 futures = "0.3.21" 
+libc = "0.2.126"
+log = "0.4.17"
 pnet_packet = "0.31.0"
 rtnetlink = "0.9.1"
 socket2 = "0.4.4"
+stderrlog = "0.5.1"
 tokio = { version = "1.19.2", features = ["full"]}
 
 [[bin]]
