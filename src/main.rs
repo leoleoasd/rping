@@ -15,11 +15,11 @@ async fn main() {
         .unwrap();
     let pinger = Box::leak(Box::new(
         Pinger::new(
-            SocketAddr::from(([10, 0, 0, 2], 0)).into(),
-            10,
+            SocketAddr::from(([10, 0, 0, 128], 0)).into(),
+            10000,
             false,
             64,
-            100,
+            10,
             Duration::from_secs(10000),
             Duration::from_secs(1),
         )

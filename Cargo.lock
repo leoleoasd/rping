@@ -385,6 +385,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "nix"
+version = "0.24.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8f17df307904acd05aa8e32e97bb20f2a0df1728bbc2d771ae8f9a90463441e9"
+dependencies = [
+ "bitflags",
+ "cfg-if",
+ "libc",
+ "memoffset",
+]
+
+[[package]]
 name = "no-std-net"
 version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -577,8 +589,8 @@ version = "0.1.0"
 dependencies = [
  "async-io",
  "futures",
- "libc",
  "log",
+ "nix 0.24.1",
  "pnet_packet",
  "rtnetlink",
  "socket2",
@@ -596,7 +608,7 @@ dependencies = [
  "log",
  "netlink-packet-route",
  "netlink-proto",
- "nix",
+ "nix 0.22.3",
  "thiserror",
  "tokio",
 ]

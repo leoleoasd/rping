@@ -7,9 +7,9 @@ edition = "2021"
 
 [dependencies]
 async-io = "1.7.0"
-futures = "0.3.21" 
-libc = "0.2.126"
+futures = "0.3.21"
 log = "0.4.17"
+nix = { version = "0.24.1", features = ["net", "socket"]}
 pnet_packet = "0.31.0"
 rtnetlink = "0.9.1"
 socket2 = "0.4.4"

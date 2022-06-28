@@ -1,8 +1,18 @@
-use std::{io, mem::MaybeUninit, ops::Index, os::unix::prelude::AsRawFd};
+use std::{
+    io::{self, IoSliceMut},
+    mem::MaybeUninit,
+    net::Ipv4Addr,
+    ops::Index,
+    os::unix::prelude::AsRawFd,
+};
 
 use async_io::Async;
 
 use log::{debug, error, info, warn};
+use nix::{
+    libc::SO_EE_ORIGIN_ICMP,
+    sys::socket::{recvmsg, setsockopt, sockopt::Ipv4RecvErr, MsgFlags, SockaddrStorage},
+};
 use pnet_packet::icmp::{
     echo_reply::EchoReplyPacket, echo_request::MutableEchoRequestPacket, IcmpPacket, IcmpTypes,
 };
@@ -12,18 +22,6 @@ use tokio::{
     task::JoinHandle,
     time::{sleep, Duration, Instant},
 };
-
-macro_rules! syscall {
-    ($fn: ident ( $($arg: expr),* $(,)* ) ) => {{
-        #[allow(unused_unsafe)]
-        let res = unsafe { libc::$fn($($arg, )*) };
-        if res == -1 {
-            Err(std::io::Error::last_os_error())
-        } else {
-            Ok(res)
-        }
-    }};
-}
 
 #[derive(Debug)]
 pub struct Pinger {
@@ -50,14 +48,14 @@ impl Pinger {
         let sock = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::ICMPV4)).unwrap();
         sock.set_broadcast(broadcast)?;
         sock.set_ttl(ttl as u32)?;
-        let yes: i32 = 1;
-        syscall!(setsockopt(
-            sock.as_raw_fd(),
-            libc::SOL_IP,
-            libc::IP_RECVERR,
-            &yes as *const i32 as *const libc::c_void,
-            std::mem::size_of::<i32>() as u32,
-        ))?;
+        setsockopt(sock.as_raw_fd(), Ipv4RecvErr, &true)?;
+        // syscall!(setsockopt(
+        //     sock.as_raw_fd(),
+        //     libc::SOL_IP,
+        //     libc::IP_RECVERR,
+        //     &yes as *const i32 as *const libc::c_void,
+        //     std::mem::size_of::<i32>() as u32,
+        // ))?;
         // syscall!(setsockopt(
         //     sock.as_raw_fd(),
         //     libc::SOL_IP,
@@ -114,46 +112,87 @@ impl Pinger {
         }
     }
     async fn listen(&self) {
-        for i in 0..self.count {
+        for _i in 0..self.count {
             let mut recv_buf: Vec<MaybeUninit<u8>> = vec![MaybeUninit::uninit(); 1500];
-            let resp_packet = self
-                .socket
-                .read_with(|s| {
-                    s.recv_from(&mut recv_buf)
-                    // let mut msg: libc::msghdr = unsafe { mem::zeroed() };
-
-                    // unsafe {
-                    //     SockAddr::init(|storage, len| {
-                    //         // msg.msg_control
-                    //         let msg_namelen = if storage.is_null() {
-                    //             0
-                    //         } else {
-                    //             size_of::<sockaddr_storage>() as libc::socklen_t
-                    //         };
-                    //         msg.msg_name = storage.cast();
-                    //         msg.msg_namelen = msg_namelen;
-                    //         let iov = &mut iov[..];
-                    //         msg.msg_iov = iov.as_mut_ptr().cast();
-                    //         msg.msg_iovlen = min(iov.len(), usize::MAX);
-                    //         msg.msg_control = control_buffer.as_mut_ptr() as *mut libc::c_void;
-                    //         msg.msg_controllen = control_buffer.len();
-                    //         msg.msg_flags = 0;
-
-                    //         syscall!(recvmsg(s.as_raw_fd(), &mut msg, 0))
-                    //             .map(|n| (n as usize, msg.msg_namelen, msg.msg_flags))
-                    //             .map(|(n, addrlen, recv_flags)| {
-                    //                 // Set the correct address length.
-                    //                 *len = addrlen;
-                    //                 (n, recv_flags)
-                    //             })
-                    //     })
-                    // }
-                })
-                .await;
+            let resp_packet = self.socket.read_with(|s| s.recv_from(&mut recv_buf)).await;
             let remote = match resp_packet {
                 Ok((_, r)) => r,
-                Err(e) => {
-                    error!("OS Error: Failed to receive packet id {i}: {}", e);
+                Err(_e) => {
+                    let mut recv_buf: Vec<u8> = vec![0; 1500];
+                    let result = self
+                        .socket
+                        .read_with(|s| {
+                            let iov = IoSliceMut::new(recv_buf.as_mut_slice());
+                            let mut cmsg_buffer = vec![0u8; 1500];
+                            recvmsg::<SockaddrStorage>(
+                                s.as_raw_fd(),
+                                [iov].as_mut_slice(),
+                                Some(&mut cmsg_buffer),
+                                MsgFlags::MSG_ERRQUEUE,
+                            )
+                            .map_err(|e| e.into())
+                            .map(|r| r.cmsgs().collect::<Vec<_>>())
+                        })
+                        .await;
+                    let result = match result {
+                        Ok(r) => r,
+                        Err(e) => {
+                            error!("OS Error: Failed to receive packet: {}", e);
+                            continue;
+                        }
+                    };
+                    for msg in result {
+                        // print!("{:?}", msg);
+                        match msg {
+                            nix::sys::socket::ControlMessageOwned::Ipv4RecvErr(e, addr) => {
+                                let addr = addr
+                                    .map(|a| Ipv4Addr::from(a.sin_addr.s_addr as u32).to_string())
+                                    .unwrap_or_else(|| "<unknown>".to_string());
+                                if e.ee_origin == SO_EE_ORIGIN_ICMP {
+                                    match e.ee_type {
+                                        3 => match e.ee_code {
+                                            0 => {
+                                                error!("ICMP Error: received Network Unreachable from {addr}");
+                                                continue;
+                                            }
+                                            1 => {
+                                                error!("ICMP Error: received Host Unreachable from {addr}");
+                                                continue;
+                                            }
+                                            2 => {
+                                                error!("ICMP Error: received Protocol Unreachable from {addr}");
+                                                continue;
+                                            }
+                                            3 => {
+                                                error!("ICMP Error: received Port Unreachable from {addr}");
+                                                continue;
+                                            }
+                                            _ => {
+                                                error!("ICMP Error: received unknown error from {addr}");
+                                                continue;
+                                            }
+                                        },
+                                        11 => {
+                                            error!(
+                                                "ICMP Error: received Time Exceeded from {addr}"
+                                            );
+                                            continue;
+                                        }
+                                        _ => {
+                                            error!(
+                                                "ICMP Error: received unknown error from {addr}"
+                                            );
+                                            continue;
+                                        }
+                                    }
+                                }
+                            }
+                            _ => {
+                                error!("OS Error: Unknown control message: {:?}", msg);
+                                continue;
+                            }
+                        }
+                    }
                     continue;
                 }
             };
