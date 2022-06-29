@@ -2,7 +2,7 @@ use std::{
     io::{self, IoSliceMut},
     mem::MaybeUninit,
     net::Ipv4Addr,
-    ops::{Index, Not},
+    ops::Index,
     os::unix::prelude::AsRawFd,
     process::exit,
 };

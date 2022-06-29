@@ -1,12 +1,12 @@
 use core::option::Option;
 use core::option::Option::{None, Some};
-use std::cmp::max;
-use std::ops::Add;
+
 use itertools::Itertools;
-use tui::text::Span;
-use std::time::{Duration, Instant};
+use std::ops::Add;
+use std::time::Duration;
 use tui::style::Style;
 use tui::symbols;
+use tui::text::Span;
 use tui::widgets::{Dataset, GraphType, Paragraph};
 
 pub struct PlotData {
@@ -93,16 +93,11 @@ impl PlotData {
         ]
     }
 
-    
-    
     pub fn y_axis_bounds(&self) -> [f64; 2] {
         // Find the Y axis bounds for our chart.
         // This is trickier than the x-axis. We iterate through all our PlotData structs
         // and find the min/max of all the values. Then we add a 10% buffer to them.
-        let iter = self
-            .data
-            .iter()
-            .map(|v| v.1);
+        let iter = self.data.iter().map(|v| v.1);
         let min = iter.clone().fold(f64::INFINITY, |a, b| a.min(b));
         let max = iter.fold(0f64, |a, b| a.max(b));
         // Add a 10% buffer to the top and bottom
@@ -111,12 +106,17 @@ impl PlotData {
         [min - min_10_percent, max + max_10_percent]
     }
 
-    
     pub fn x_axis_bounds(&self) -> [f64; 2] {
-        [if self.idx - self.buffer > 0.0 { self.idx - self.buffer } else { 0.0 }, self.idx]
+        [
+            if self.idx - self.buffer > 0.0 {
+                self.idx - self.buffer
+            } else {
+                0.0
+            },
+            self.idx,
+        ]
     }
 
-    
     pub fn x_axis_labels(&self, bounds: [f64; 2]) -> Vec<Span> {
         return vec![
             Span::raw(format!("{:?}", bounds[0])),

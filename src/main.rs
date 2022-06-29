@@ -1,30 +1,19 @@
 use clap::{ArgAction, Parser, Subcommand, ValueEnum};
-use crossterm::event::{KeyEvent, KeyModifiers};
-use crossterm::{
-    event::{self, DisableMouseCapture, EnableMouseCapture, Event as CEvent, KeyCode},
-    execute,
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
-};
+
 use dns_lookup::lookup_host;
-use log::trace;
+use log::{error, trace};
 use pinger::Pinger;
 use std::io;
-use std::iter;
-use std::net::IpAddr;
+
 use std::net::{Ipv4Addr, SocketAddr};
-use std::ops::Add;
-use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::thread;
-use std::thread::JoinHandle;
-use std::time::{Duration, Instant};
+
 use tokio::sync::mpsc;
 use tokio::{select, signal};
 use tui::backend::CrosstermBackend;
 use tui::layout::{Constraint, Direction, Layout};
 use tui::style::{Color, Style};
-use tui::text::Span;
-use tui::widgets::{Axis, Block, Borders, Chart, Dataset};
+
+use tui::widgets::{Axis, Block, Borders, Chart};
 use tui::Terminal;
 
 mod pinger;
@@ -40,7 +29,7 @@ struct Cli {
     #[clap(long, value_enum, default_value = "off")]
     timestamp: Timestamp,
     #[clap(help = "host to ping")]
-    host: Ipv4Addr,
+    host: String,
     #[clap(
         short,
         long,
@@ -109,6 +98,20 @@ async fn main() {
         .unwrap();
     trace!("args = {args:?}");
     let (tx, mut rx) = mpsc::channel(10);
+
+    let host: Vec<Ipv4Addr> = lookup_host(&args.host)
+        .unwrap()
+        .into_iter()
+        .filter_map(|x| match x {
+            std::net::IpAddr::V4(x) => Some(x),
+            _ => None,
+        })
+        .collect();
+    if host.is_empty() {
+        error!("{} is not a valid host", args.host);
+        return;
+    }
+
     let mut data = plot_data::PlotData::new(
         args.host.to_string(),
         150.0,
@@ -118,7 +121,7 @@ async fn main() {
 
     let pinger = Box::leak(Box::new(
         Pinger::new(
-            SocketAddr::from((args.host, 0)).into(),
+            SocketAddr::from((host[0], 0)).into(),
             if args.count >= 0 {
                 args.count as u16
             } else {
@@ -140,7 +143,7 @@ async fn main() {
             pinger.traceroute().await.unwrap();
         }
         None => {
-            let mut stdout = io::stdout();
+            let stdout = io::stdout();
             // execute!(stdout, EnterAlternateScreen, EnableMouseCapture).unwrap();
             let backend = CrosstermBackend::new(stdout);
             let mut terminal = Terminal::new(backend).unwrap();
@@ -160,10 +163,8 @@ async fn main() {
                                     .vertical_margin(1)
                                     .horizontal_margin(0)
                                     .constraints(
-                                        [
-                                            Constraint::Length(1),
-                                            Constraint::Percentage(100),
-                                        ].as_mut_slice()
+                                        [Constraint::Length(1), Constraint::Percentage(100)]
+                                            .as_mut_slice(),
                                     )
                                     .split(f.size());
 
