@@ -2,14 +2,14 @@ use std::{
     io::{self, IoSliceMut},
     mem::MaybeUninit,
     net::Ipv4Addr,
-    ops::Index,
+    ops::{Index, Not},
     os::unix::prelude::AsRawFd,
     process::exit,
 };
 
 use async_io::Async;
 
-use log::{debug, error, info, warn};
+use log::{debug, error, info, trace, warn};
 use nix::{
     ifaddrs::getifaddrs,
     libc::{sock_extended_err, SO_EE_ORIGIN_ICMP},
@@ -28,7 +28,9 @@ use pnet_packet::{
 };
 use quick_error::quick_error;
 use socket2::{Domain, Protocol, SockAddr, Socket, Type};
+use tokio::sync::{mpsc::Sender, Notify};
 use tokio::{
+    select,
     sync::{Mutex, RwLock},
     task::JoinHandle,
     time::{interval, sleep, Duration, Instant},
@@ -104,6 +106,11 @@ pub struct Pinger {
     timeout: Duration,
     interval: Duration,
     timeout_handles: Mutex<Vec<JoinHandle<()>>>,
+    pub latencies: Mutex<Vec<Option<Duration>>>,
+    finished: Notify,
+    tx: Sender<Option<Duration>>,
+    latencies_sent: Mutex<u16>,
+    graph: bool,
 }
 
 impl Pinger {
@@ -117,6 +124,8 @@ impl Pinger {
         timeout: Duration,
         interval: Duration,
         route: bool,
+        tx: Sender<Option<Duration>>,
+        graph: bool,
     ) -> io::Result<Self> {
         let addrs = getifaddrs()?;
         for ifaddr in addrs {
@@ -150,12 +159,18 @@ impl Pinger {
             interval,
             starts: Default::default(),
             timeout_handles: Default::default(),
+            latencies: Default::default(),
+            finished: Default::default(),
+            tx,
+            latencies_sent: Default::default(),
+            graph,
         })
     }
-    pub async fn start(&'static mut self) {
+    pub async fn start(&'static self) {
         let b = tokio::spawn(self.listen());
         let a = tokio::spawn(self.ping(b));
         a.await.unwrap();
+        self.finished.notified().await;
     }
     async fn ping(&'static self, listen_handle: JoinHandle<()>) {
         let listen_handle = Box::leak(Box::new(listen_handle));
@@ -172,6 +187,7 @@ impl Pinger {
 
             let now = Instant::now();
             self.starts.write().await.push(now);
+            self.latencies.lock().await.push(None);
 
             self.timeout_handles
                 .lock()
@@ -195,15 +211,15 @@ impl Pinger {
             );
         }
     }
-    async fn traceroute(&self) -> io::Result<Vec<(Ipv4Addr, Duration)>> {
-        let result = vec![];
-        for ttl in 0..128 {
+    pub async fn traceroute(&'static self) -> io::Result<Vec<Option<(Ipv4Addr, Duration)>>> {
+        let mut result = vec![];
+        for ttl in 1..128 {
             let mut data: Vec<u8> = vec![0; self.size as usize];
             let mut echo_packet = MutableIcmpPacket::new(&mut data[..]).unwrap();
-            echo_packet.set_icmp_type(IcmpTypes::Traceroute);
+            echo_packet.set_icmp_type(IcmpTypes::EchoRequest);
             self.socket.as_ref().set_ttl(ttl)?;
 
-            let _now = Instant::now();
+            let now = Instant::now();
 
             match self
                 .socket
@@ -213,14 +229,38 @@ impl Pinger {
                 Ok(_) => {}
                 Err(e) => {
                     error!("Failed to send packet: {}", e);
-                    self.timeout_handles
-                        .lock()
-                        .await
-                        .index(ttl as usize)
-                        .abort();
-                    continue;
+                    panic!("{:?}", e);
                 }
-            }
+            };
+            select! {
+                package = self.recv() => {
+                    trace!("{:?}", package);
+                    match package {
+                        Ok(icmp) => {
+                            result.push(Some((
+                                icmp.1,
+                                now.elapsed()
+                            )));
+                            info!("Hop {ttl:>2 }: {:<15 } {:?}", icmp.1, now.elapsed());
+                            break;
+                        },
+                        Err(IcmpError::TimeExceeded(addr, _)) => {
+                            result.push(Some((
+                                addr,
+                                now.elapsed()
+                            )));
+                            info!("Hop {ttl:>2 }: {addr:<15 } {:?}", now.elapsed());
+                        },
+                        Err(err) => {
+                            error!("{}", err);
+                        }
+                    }
+                }
+                _ = sleep(self.timeout) => {
+                    info!("Hop {ttl:>2 }: *");
+                    result.push(None);
+                }
+            };
 
             debug!(
                 "Sent package {ttl} to {}",
@@ -306,6 +346,26 @@ impl Pinger {
                                 remote,
                                 duration
                             );
+                            self.latencies.lock().await[seq as usize] = Some(duration);
+
+                            if self.graph {
+                                let mut sent = self.latencies_sent.lock().await;
+                                let mut add = 0;
+                                for l in
+                                    self.latencies.lock().await[*sent as usize..seq as usize].iter()
+                                {
+                                    if l.is_some() {
+                                        add += 1;
+                                        self.tx.send(*l).await.unwrap();
+                                    } else {
+                                        // wait for timeout thread to send this
+                                        break;
+                                    }
+                                }
+                                *sent += add;
+                                drop(sent);
+                            }
+
                             self.timeout_handles
                                 .lock()
                                 .await
@@ -349,12 +409,24 @@ impl Pinger {
                 },
             }
         }
+        self.finished.notify_one();
     }
     async fn timeout(&self, seq: u16, listen_handle: &JoinHandle<()>) {
         sleep(self.timeout).await;
         error!("Timeout for package {seq}");
+
+        if self.graph {
+            // we can assure that this is the first, non_sent timeout package
+            // we can safely send a none and add one to latencies_sent
+            // if this package is followed by sent packages,
+            // they will be send by the listen thread
+            self.tx.send(None).await.unwrap();
+            *self.latencies_sent.lock().await += 1;
+        }
+
         if seq == self.count - 1 {
             listen_handle.abort();
+            self.finished.notify_one();
         }
     }
 }
