@@ -162,7 +162,7 @@ async fn main() {
                                     .constraints(
                                         [
                                             Constraint::Length(1),
-                                            Constraint::Percentage(10),
+                                            Constraint::Percentage(100),
                                         ].as_mut_slice()
                                     )
                                     .split(f.size());
@@ -192,7 +192,7 @@ async fn main() {
                                     f.render_widget(paragraph, area);
                                 }
 
-                                let datasets = vec![(&data).into()];
+                                let datasets = vec![(&data).dataset()];
 
                                 let y_axis_bounds = data.y_axis_bounds();
                                 let x_axis_bounds = data.x_axis_bounds();
@@ -247,14 +247,6 @@ async fn main() {
                 / received as f64
                 / 1000.0;
             println!("Average latency: {average:.2} ms");
-
-            // disable_raw_mode().unwrap();
-            // execute!(
-            //     terminal.backend_mut(),
-            //     LeaveAlternateScreen,
-            //     DisableMouseCapture
-            // ).unwrap();
-            // terminal.show_cursor().unwrap();
         }
     }
 }

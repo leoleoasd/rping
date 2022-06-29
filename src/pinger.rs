@@ -372,12 +372,6 @@ impl Pinger {
                                 .index(seq as usize)
                                 .abort();
                         }
-                        IcmpTypes::TimeExceeded => {
-                            // let echo_reply = TimeExceededPacket::new(&recv_buf[..]).unwrap();
-                            // let seq = echo_reply.get_sequence_number();
-                            // let duration = self.starts.read().await.index(seq as usize).elapsed();
-                            info!("Received package from {:?}: Time Exceeded", remote);
-                        }
                         _ => {
                             warn!(
                                 "Received package from {:?}: {:?}",

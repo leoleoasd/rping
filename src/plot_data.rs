@@ -140,18 +140,16 @@ impl PlotData {
             .map(|i| Span::raw(format!("{:?}", duration.add(increment * i))))
             .collect()
     }
-}
 
-impl<'a> From<&'a PlotData> for Dataset<'a> {
-    fn from(plot: &'a PlotData) -> Self {
-        let slice = plot.data.as_slice();
+    pub fn dataset<'a>(&'a self) -> Dataset<'a> {
+        let slice = self.data.as_slice();
         Dataset::default()
-            .marker(if plot.simple_graphics {
+            .marker(if self.simple_graphics {
                 symbols::Marker::Dot
             } else {
                 symbols::Marker::Braille
             })
-            .style(plot.style)
+            .style(self.style)
             .graph_type(GraphType::Line)
             .data(slice)
     }
