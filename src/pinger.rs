@@ -178,7 +178,11 @@ impl Pinger {
             panic!("Already started pinging!");
         }
         let mut data: Vec<u8> = vec![0; self.size as usize];
-        let mut timer = interval(self.interval);
+        let mut timer = if self.interval.is_zero() {
+            interval(Duration::from_nanos(1))
+        } else {
+            interval(self.interval)
+        };
         for i in 0..self.count {
             timer.tick().await;
             let mut echo_packet = MutableEchoRequestPacket::new(&mut data[..]).unwrap();
