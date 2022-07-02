@@ -1,11 +1,13 @@
 use clap::{ArgAction, Parser, Subcommand, ValueEnum};
 
 use dns_lookup::lookup_host;
+use futures::{stream, StreamExt};
 use log::{error, trace};
 use pinger::Pinger;
 use std::io;
 
 use std::net::{Ipv4Addr, SocketAddr};
+use std::time::Duration;
 
 use tokio::sync::mpsc;
 use tokio::{select, signal};
@@ -28,37 +30,48 @@ struct Cli {
     quiet: bool,
     #[clap(long, value_enum, default_value = "off")]
     timestamp: Timestamp,
-    #[clap(help = "host to ping")]
-    host: String,
-    #[clap(
-        short,
-        long,
-        help = "number of pings to send, use -1 for infinite",
-        default_value = "-1"
-    )]
-    count: i16,
-    #[clap(short, long)]
-    broadcast: bool,
-    #[clap(short, long, help = "time between pings", default_value = "1s")]
-    interval: humantime::Duration,
-    #[clap(short, long, default_value = "128")]
-    ttl: u8,
-    #[clap(short, long, default_value = "32")]
-    size: u16,
-    #[clap(short='r', long="route", help = "Don't use the system routing table", action = ArgAction::SetTrue)]
-    route: bool,
-    #[clap(long, help = "Timeout for each ping", default_value = "5s")]
-    timeout: humantime::Duration,
-    #[clap(short, long, help = "Draw latency graph", action = ArgAction::SetTrue)]
-    graph: bool,
 
     #[clap(subcommand)]
-    command: Option<Commands>,
+    command: Commands,
 }
 
 #[derive(Subcommand, Debug)]
 enum Commands {
-    Trace {},
+    Trace {
+        #[clap(help = "host to ping")]
+        hosts: Vec<String>,
+        #[clap(short, long, default_value = "32")]
+        size: u16,
+        #[clap(short, long, help = "Draw topology graph", action = ArgAction::SetTrue)]
+        graph: bool,
+        #[clap(long, help = "Timeout for each ping", default_value = "5s")]
+        timeout: humantime::Duration,
+    },
+    Ping {
+        #[clap(help = "host to ping")]
+        host: String,
+        #[clap(
+            short,
+            long,
+            help = "number of pings to send, use -1 for infinite",
+            default_value = "-1"
+        )]
+        count: i16,
+        #[clap(short, long)]
+        broadcast: bool,
+        #[clap(short, long, help = "time between pings", default_value = "1s")]
+        interval: humantime::Duration,
+        #[clap(short, long, default_value = "128")]
+        ttl: u8,
+        #[clap(short, long, default_value = "32")]
+        size: u16,
+        #[clap(short='r', long="route", help = "Don't use the system routing table", action = ArgAction::SetTrue)]
+        route: bool,
+        #[clap(long, help = "Timeout for each ping", default_value = "5s")]
+        timeout: humantime::Duration,
+        #[clap(short, long, help = "Draw latency graph", action = ArgAction::SetTrue)]
+        graph: bool,
+    },
 }
 
 #[derive(Clone, ValueEnum, Debug)]
@@ -89,65 +102,181 @@ impl From<Timestamp> for stderrlog::Timestamp {
 #[tokio::main]
 async fn main() {
     let args = Cli::parse();
+    let graph = match args.command {
+        Commands::Trace { .. } => false,
+        Commands::Ping { graph, .. } => graph,
+    };
     stderrlog::new()
         .module(module_path!())
-        .quiet(args.quiet || args.graph)
+        .quiet(args.quiet || graph)
         .verbosity((args.verbosity + 2) as usize)
         .timestamp(args.timestamp.clone().into())
         .init()
         .unwrap();
     trace!("args = {args:?}");
-    let (tx, mut rx) = mpsc::channel(10);
 
-    let host: Vec<Ipv4Addr> = lookup_host(&args.host)
-        .unwrap()
-        .into_iter()
-        .filter_map(|x| match x {
-            std::net::IpAddr::V4(x) => Some(x),
-            _ => None,
-        })
-        .collect();
-    if host.is_empty() {
-        error!("{} is not a valid host", args.host);
-        return;
-    }
-
-    let mut data = plot_data::PlotData::new(
-        args.host.to_string(),
-        150.0,
-        Style::default().fg(Color::Gray),
-        false,
-    );
-
-    let pinger = Box::leak(Box::new(
-        Pinger::new(
-            SocketAddr::from((host[0], 0)).into(),
-            if args.count >= 0 {
-                args.count as u16
-            } else {
-                u16::MAX
-            },
-            args.broadcast,
-            args.size,
-            args.ttl,
-            args.timeout.into(),
-            args.interval.into(),
-            args.route,
-            tx,
-            args.graph,
-        )
-        .unwrap(),
-    ));
     match args.command {
-        Some(Commands::Trace {}) => {
-            pinger.traceroute().await.unwrap();
+        Commands::Trace {
+            hosts,
+            size,
+            graph,
+            timeout,
+        } => {
+            let results = stream::iter(hosts.into_iter().map(|h| {
+                lookup_host(&h)
+                    .unwrap()
+                    .into_iter()
+                    .find_map(|x| match x {
+                        std::net::IpAddr::V4(x) => Some(x),
+                        _ => None,
+                    })
+                    .unwrap()
+            }))
+            .then(|host| async move {
+                let (tx, _) = mpsc::channel(1);
+                let pinger = Box::leak(Box::new(
+                    Pinger::new(
+                        SocketAddr::from((host, 0)).into(),
+                        0,
+                        false,
+                        size,
+                        128,
+                        timeout.into(),
+                        Duration::from_secs(1),
+                        false,
+                        tx,
+                        graph,
+                    )
+                    .unwrap(),
+                ));
+                pinger.traceroute().await.unwrap()
+            })
+            .collect::<Vec<_>>()
+            .await;
+            trace!("{:?}", results);
+            if graph {
+                let max_length = results.iter().map(|x| x.len()).max().unwrap_or(0);
+                let mut same_length = 0;
+                for i in 0..max_length {
+                    if results.iter().all(|r| {
+                        r.len() > i
+                            && r[i].is_some()
+                            && results[0][i].is_some()
+                            && r[i].unwrap().0 == results[0][i].unwrap().0
+                    }) {
+                        same_length += 1;
+                    } else {
+                        break;
+                    }
+                }
+                if same_length == 0 {
+                    println!("* localhost");
+                }
+                for i in 0..same_length {
+                    println!("* {}", results[0][i].unwrap().0);
+                    if i != same_length - 1 {
+                        println!("|");
+                    }
+                }
+                print!("| ");
+                for _ in 1..results.len() {
+                    print!("\\ ");
+                }
+                println!();
+                for i in same_length..max_length {
+                    for j in 0..results.len() {
+                        if results[j].len() <= i {
+                            continue;
+                        }
+                        // if i != same_length {
+                        //     for k in 0..results.len() {
+                        //         if results[k].len() > i {
+                        //             print!("| ");
+                        //         } else {
+                        //             print!("  ");
+                        //         }
+                        //     }
+                        //     println!();
+                        // }
+
+                        for k in 0..results.len() {
+                            if j == k {
+                                print!("* ");
+                            } else if results[k].len() > i
+                                && (if results[k].len() == i + 1 {
+                                    k > j
+                                } else {
+                                    true
+                                })
+                            {
+                                print!("| ");
+                            } else {
+                                print!("  ");
+                            }
+                        }
+                        println!(
+                            "  {}",
+                            match results[j][i] {
+                                Some(x) => x.0.to_string(),
+                                None => "*".to_string(),
+                            }
+                        );
+                    }
+                }
+            }
         }
-        None => {
+        Commands::Ping {
+            host: _host,
+            count,
+            broadcast,
+            interval,
+            ttl,
+            size,
+            route,
+            timeout,
+            graph,
+        } => {
+            let (tx, mut rx) = mpsc::channel(10);
+            let host: Vec<Ipv4Addr> = lookup_host(&_host)
+                .unwrap()
+                .into_iter()
+                .filter_map(|x| match x {
+                    std::net::IpAddr::V4(x) => Some(x),
+                    _ => None,
+                })
+                .collect();
+            if host.is_empty() {
+                error!("{} is not a valid host", _host);
+                return;
+            }
+
+            let mut data = plot_data::PlotData::new(
+                _host.to_string(),
+                150.0,
+                Style::default().fg(Color::Gray),
+                false,
+            );
+
+            let pinger = Box::leak(Box::new(
+                Pinger::new(
+                    SocketAddr::from((host[0], 0)).into(),
+                    if count >= 0 { count as u16 } else { u16::MAX },
+                    broadcast,
+                    size,
+                    ttl,
+                    timeout.into(),
+                    interval.into(),
+                    route,
+                    tx,
+                    graph,
+                )
+                .unwrap(),
+            ));
             let stdout = io::stdout();
             // execute!(stdout, EnterAlternateScreen, EnableMouseCapture).unwrap();
             let backend = CrosstermBackend::new(stdout);
             let mut terminal = Terminal::new(backend).unwrap();
-            if args.graph {
+            if graph {
                 // enable_raw_mode().unwrap();
 
                 terminal.clear().unwrap();
